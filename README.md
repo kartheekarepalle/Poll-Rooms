@@ -2,7 +2,8 @@
 
 A production-ready real-time polling web application. Create a poll, share a link, and watch votes come in live — no sign-up required.
 
-> **Live Demo:** [https://poll-rooms.vercel.app](https://poll-rooms.vercel.app) *(replace with your deployment URL)*
+> **Live Demo:** [https://poll-rooms-vert.vercel.app](https://poll-rooms-vert.vercel.app)  
+> **GitHub Repo:** [https://github.com/kartheekarepalle/Poll-Rooms](https://github.com/kartheekarepalle/Poll-Rooms)
 
 ---
 
@@ -10,11 +11,13 @@ A production-ready real-time polling web application. Create a poll, share a lin
 
 - **Instant poll creation** — question + 2-10 options
 - **Unique shareable links** — UUID-based; share with anyone
-- **Real-time results** — Supabase Realtime pushes vote updates to all viewers
+- **Real-time results** — HTTP polling every 2s pushes vote updates to all viewers
 - **Anonymous voting** — no account required
 - **Anti-abuse fairness** — IP + browser fingerprint + rate limiting
-- **Beautiful UI** — minimal, responsive, mobile-first design
+- **Responses viewer** — see who voted, which option they picked, with masked IPs
+- **Beautiful UI** — animated gradients, glass morphism, floating particles
 - **Animated charts** — Recharts horizontal bar chart with smooth transitions
+- **Premium UX** — confetti success modal, winner trophy highlight, tab switcher
 - **Edge case handling** — validation, error states, 404, network failures
 
 ---
@@ -25,26 +28,27 @@ A production-ready real-time polling web application. Create a poll, share a lin
 ┌─────────────────────────────────────────────────────┐
 │                     Client (Browser)                │
 │  Next.js App Router  •  Tailwind CSS  •  ShadCN UI  │
-│  Recharts  •  Supabase Realtime Subscription        │
+│  Recharts  •  HTTP Polling (2s interval)              │
 └──────────────────┬──────────────────────────────────┘
-                   │  REST API + WebSocket
+                   │  REST API
 ┌──────────────────▼──────────────────────────────────┐
 │            Next.js API Routes (Server)              │
-│  POST /api/polls       — Create poll                │
-│  GET  /api/polls/[id]  — Fetch poll + options       │
-│  POST /api/polls/[id]/vote — Cast vote              │
+│  POST /api/polls            — Create poll           │
+│  GET  /api/polls/[id]       — Fetch poll + options  │
+│  POST /api/polls/[id]/vote  — Cast vote             │
+│  GET  /api/polls/[id]/responses — Vote responses    │
 └──────────────────┬──────────────────────────────────┘
-                   │  Supabase Client (service role)
+                   │  Supabase Client (anon key)
 ┌──────────────────▼──────────────────────────────────┐
 │              Supabase (PostgreSQL)                   │
 │  polls · options · votes                            │
-│  RLS policies · Unique constraints · Realtime       │
+│  RLS policies · Unique constraints                  │
 └─────────────────────────────────────────────────────┘
 ```
 
 ### Real-Time Strategy
 
-The `options` table is added to the Supabase Realtime publication. When a vote is cast, the API route increments `vote_count` on the relevant option row. Supabase broadcasts this `UPDATE` event to all subscribed clients via WebSocket. The client hook (`useRealtimePoll`) patches the local state immediately — zero polling, zero reloads.
+The client uses an HTTP polling approach (`useRealtimePoll` hook) that fetches updated vote counts every 2 seconds. When a vote is cast, the API route increments `votes` on the relevant option row in Supabase. All connected clients see the updated counts within 2 seconds — simple, reliable, and works on all serverless platforms.
 
 ---
 
@@ -60,7 +64,7 @@ The `options` table is added to the Supabase Realtime publication. When a vote i
 ### 2. Browser Fingerprint Restriction (Client + Server)
 - Generates a fingerprint from `navigator.userAgent`, screen resolution, timezone, etc.
 - Stored in `localStorage` to immediately disable the voting UI on revisit
-- Server also checks `UNIQUE INDEX ON votes(poll_id, voter_fingerprint)`
+- Server also checks `UNIQUE INDEX ON votes(poll_id, fingerprint)`
 - **Prevents:** same browser from voting twice even with IP changes
 - **Limitation:** incognito mode or different browsers bypass this
 
@@ -83,8 +87,10 @@ poll-rooms/
 │   │   │       ├── route.ts              # POST: create poll
 │   │   │       └── [id]/
 │   │   │           ├── route.ts          # GET: fetch poll
-│   │   │           └── vote/
-│   │   │               └── route.ts      # POST: cast vote
+│   │   │           ├── vote/
+│   │   │           │   └── route.ts      # POST: cast vote
+│   │   │           └── responses/
+│   │   │               └── route.ts      # GET: vote responses
 │   │   ├── poll/
 │   │   │   └── [id]/
 │   │   │       └── page.tsx              # Poll voting/results page
@@ -100,15 +106,19 @@ poll-rooms/
 │   │   │   ├── label.tsx
 │   │   │   └── skeleton.tsx
 │   │   ├── create-poll-form.tsx
+│   │   ├── floating-particles.tsx         # Animated background particles
 │   │   ├── poll-options.tsx
+│   │   ├── poll-responses.tsx              # Responses viewer tab
 │   │   ├── poll-results.tsx
 │   │   ├── poll-skeleton.tsx
+│   │   ├── poll-success-modal.tsx          # Confetti success modal
 │   │   └── share-link.tsx
 │   ├── hooks/
-│   │   └── use-realtime-poll.ts          # Supabase Realtime hook
+│   │   └── use-realtime-poll.ts          # HTTP polling hook (2s interval)
 │   ├── lib/
 │   │   ├── fingerprint.ts               # Browser fingerprint + localStorage
-│   │   ├── supabase.ts                  # Server + browser Supabase clients
+│   │   ├── store.ts                  # Supabase-backed data operations
+│   │   ├── supabase.ts               # Supabase client (anon key)
 │   │   └── utils.ts                      # cn() helper
 │   └── types/
 │       └── index.ts                      # TypeScript interfaces
@@ -129,8 +139,8 @@ poll-rooms/
 | Table     | Columns                                                             |
 |-----------|---------------------------------------------------------------------|
 | `polls`   | `id` (UUID PK), `question` (TEXT), `created_at` (TIMESTAMPTZ)      |
-| `options` | `id` (UUID PK), `poll_id` (FK), `text` (TEXT), `vote_count` (INT)  |
-| `votes`   | `id` (UUID PK), `poll_id` (FK), `option_id` (FK), `voter_ip`, `voter_fingerprint`, `created_at` |
+| `options` | `id` (UUID PK), `poll_id` (FK), `text` (TEXT), `votes` (INT)      |
+| `votes`   | `id` (UUID PK), `poll_id` (FK), `option_id` (FK), `voter_ip`, `fingerprint`, `created_at` |
 
 ### Key Indexes
 - `idx_options_poll_id` — fast option lookup by poll
@@ -168,7 +178,6 @@ poll-rooms/
 4. Go to **Settings → API** and copy:
    - Project URL → `NEXT_PUBLIC_SUPABASE_URL`
    - `anon` key → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-   - `service_role` key → `SUPABASE_SERVICE_ROLE_KEY`
 
 ### 2. Environment Variables
 
@@ -177,7 +186,6 @@ Create `.env.local`:
 ```env
 NEXT_PUBLIC_SUPABASE_URL=https://xxxxx.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhb...
-SUPABASE_SERVICE_ROLE_KEY=eyJhb...
 ```
 
 ### 3. Local Development
@@ -191,7 +199,7 @@ npm run dev
 
 1. Push code to GitHub
 2. Go to [vercel.com](https://vercel.com) → **New Project** → Import repo
-3. Add the 3 environment variables above in Vercel project settings
+3. Add the 2 environment variables above in Vercel project settings
 4. Deploy — Vercel auto-detects Next.js
 
 ### 5. Test Live App
@@ -213,7 +221,7 @@ npm run dev
 | UI Components  | ShadCN UI (manual)                |
 | Charts         | Recharts                          |
 | Database       | Supabase (PostgreSQL)             |
-| Real-time      | Supabase Realtime                 |
+| Real-time      | HTTP Polling (2s)                 |
 | Icons          | Lucide React                      |
 | Toasts         | Sonner                            |
 | Deployment     | Vercel                            |
