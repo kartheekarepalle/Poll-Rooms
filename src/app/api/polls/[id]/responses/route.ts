@@ -20,14 +20,14 @@ export async function GET(
       );
     }
 
-    if (!pollExists(id)) {
+    if (!(await pollExists(id))) {
       return NextResponse.json<ApiError>(
         { error: "Poll not found." },
         { status: 404 }
       );
     }
 
-    const responses = getVotesForPoll(id);
+    const responses = await getVotesForPoll(id);
 
     return NextResponse.json({ responses });
   } catch (error) {

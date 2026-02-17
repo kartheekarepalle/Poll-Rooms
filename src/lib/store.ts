@@ -1,116 +1,208 @@
 /**
- * In-memory data store for polls, options, and votes.
+ * Supabase-backed data store for polls, options, and votes.
  *
- * This replaces Supabase so the app works out-of-the-box with ZERO
- * external dependencies. Data persists as long as the dev server runs.
- *
- * For production, swap this out with a real database (Supabase, PostgreSQL, etc).
+ * All operations go through the Supabase client, so data persists
+ * across server restarts and serverless function invocations.
  */
 
-import { randomUUID } from "crypto";
-import type { Poll, PollOption, Vote } from "@/types";
+import { getSupabase } from "@/lib/supabase";
+import type { Poll, PollOption } from "@/types";
 
-// ─── In-memory tables ────────────────────────────────────────
-
-const polls = new Map<string, { id: string; question: string; created_at: string }>();
-const options = new Map<string, PollOption>();
-const votes: Vote[] = [];
+// Helper: typed Supabase query results
+type PollRow = { id: string; question: string; created_at: string };
+type OptionRow = { id: string; poll_id: string; text: string; votes: number };
+type VoteRow = { id: string; poll_id: string; option_id: string; voter_ip: string; fingerprint: string; created_at: string };
 
 // ─── Poll operations ─────────────────────────────────────────
 
-export function createPoll(question: string, optionTexts: string[]): Poll {
-  const pollId = randomUUID();
-  const now = new Date().toISOString();
+export async function createPoll(question: string, optionTexts: string[]): Promise<Poll> {
+  const supabase = getSupabase();
 
-  const pollRecord = { id: pollId, question, created_at: now };
-  polls.set(pollId, pollRecord);
+  // Insert poll
+  const { data, error: pollError } = await supabase
+    .from("polls")
+    .insert({ question } as never)
+    .select()
+    .single();
 
-  const pollOptions: PollOption[] = optionTexts.map((text) => {
-    const opt: PollOption = {
-      id: randomUUID(),
-      poll_id: pollId,
-      text,
-      vote_count: 0,
-    };
-    options.set(opt.id, opt);
-    return opt;
-  });
+  if (pollError || !data) {
+    throw new Error(`Failed to create poll: ${pollError?.message}`);
+  }
 
-  return { ...pollRecord, options: pollOptions };
+  const poll = data as unknown as PollRow;
+
+  // Insert options
+  const optionRows = optionTexts.map((text) => ({
+    poll_id: poll.id,
+    text,
+  }));
+
+  const { data: optData, error: optError } = await supabase
+    .from("options")
+    .insert(optionRows as never)
+    .select();
+
+  if (optError || !optData) {
+    throw new Error(`Failed to create options: ${optError?.message}`);
+  }
+
+  const options = optData as unknown as OptionRow[];
+
+  const pollOptions: PollOption[] = options.map((o) => ({
+    id: o.id,
+    poll_id: o.poll_id,
+    text: o.text,
+    vote_count: o.votes ?? 0,
+  }));
+
+  return {
+    id: poll.id,
+    question: poll.question,
+    created_at: poll.created_at,
+    options: pollOptions,
+  };
 }
 
-export function getPoll(id: string): Poll | null {
-  const poll = polls.get(id);
-  if (!poll) return null;
+export async function getPoll(id: string): Promise<Poll | null> {
+  const supabase = getSupabase();
 
-  const pollOptions = Array.from(options.values())
-    .filter((o) => o.poll_id === id)
-    .sort((a, b) => a.id.localeCompare(b.id)); // stable order
+  const { data, error: pollError } = await supabase
+    .from("polls")
+    .select("*")
+    .eq("id", id)
+    .single();
 
-  return { ...poll, options: pollOptions };
+  if (pollError || !data) return null;
+
+  const poll = data as unknown as PollRow;
+
+  const { data: optData } = await supabase
+    .from("options")
+    .select("*")
+    .eq("poll_id", id)
+    .order("id");
+
+  const options = (optData ?? []) as unknown as OptionRow[];
+
+  const pollOptions: PollOption[] = options.map((o) => ({
+    id: o.id,
+    poll_id: o.poll_id,
+    text: o.text,
+    vote_count: o.votes ?? 0,
+  }));
+
+  return {
+    id: poll.id,
+    question: poll.question,
+    created_at: poll.created_at,
+    options: pollOptions,
+  };
 }
 
 // ─── Vote operations ─────────────────────────────────────────
 
-export function hasVotedByIp(pollId: string, ip: string): boolean {
-  return votes.some((v) => v.poll_id === pollId && v.voter_ip === ip);
+export async function hasVotedByIp(pollId: string, ip: string): Promise<boolean> {
+  const supabase = getSupabase();
+  const { count } = await supabase
+    .from("votes")
+    .select("*", { count: "exact", head: true })
+    .eq("poll_id", pollId)
+    .eq("voter_ip", ip);
+  return (count ?? 0) > 0;
 }
 
-export function hasVotedByFingerprint(pollId: string, fingerprint: string): boolean {
+export async function hasVotedByFingerprint(pollId: string, fingerprint: string): Promise<boolean> {
   if (fingerprint === "unknown") return false;
-  return votes.some((v) => v.poll_id === pollId && v.voter_fingerprint === fingerprint);
+  const supabase = getSupabase();
+  const { count } = await supabase
+    .from("votes")
+    .select("*", { count: "exact", head: true })
+    .eq("poll_id", pollId)
+    .eq("fingerprint", fingerprint);
+  return (count ?? 0) > 0;
 }
 
-export function optionBelongsToPoll(optionId: string, pollId: string): boolean {
-  const opt = options.get(optionId);
-  return !!opt && opt.poll_id === pollId;
+export async function optionBelongsToPoll(optionId: string, pollId: string): Promise<boolean> {
+  const supabase = getSupabase();
+  const { count } = await supabase
+    .from("options")
+    .select("*", { count: "exact", head: true })
+    .eq("id", optionId)
+    .eq("poll_id", pollId);
+  return (count ?? 0) > 0;
 }
 
-export function castVote(
+export async function castVote(
   pollId: string,
   optionId: string,
   voterIp: string,
   voterFingerprint: string
-): { success: boolean; error?: string } {
-  // Double-check no duplicate (race condition guard)
-  if (hasVotedByIp(pollId, voterIp)) {
-    return { success: false, error: "You have already voted on this poll." };
-  }
-  if (voterFingerprint !== "unknown" && hasVotedByFingerprint(pollId, voterFingerprint)) {
-    return { success: false, error: "You have already voted on this poll." };
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = getSupabase();
+
+  // Insert vote (unique indexes will reject duplicates at DB level)
+  const { error: voteError } = await supabase
+    .from("votes")
+    .insert({
+      poll_id: pollId,
+      option_id: optionId,
+      voter_ip: voterIp,
+      fingerprint: voterFingerprint,
+    } as never);
+
+  if (voteError) {
+    // Unique constraint violation = duplicate vote
+    if (voteError.code === "23505") {
+      return { success: false, error: "You have already voted on this poll." };
+    }
+    return { success: false, error: voteError.message };
   }
 
-  const opt = options.get(optionId);
-  if (!opt || opt.poll_id !== pollId) {
-    return { success: false, error: "Option not found in this poll." };
-  }
+  // Increment vote count on the option
+  // Get current count and increment
+  const { data: opt } = await supabase
+    .from("options")
+    .select("votes")
+    .eq("id", optionId)
+    .single();
 
-  // Record vote
-  votes.push({
-    id: randomUUID(),
-    poll_id: pollId,
-    option_id: optionId,
-    voter_ip: voterIp,
-    voter_fingerprint: voterFingerprint,
-    created_at: new Date().toISOString(),
-  });
+  const currentCount = (opt as unknown as { votes: number })?.votes ?? 0;
 
-  // Increment vote count
-  opt.vote_count += 1;
+  await supabase
+    .from("options")
+    .update({ votes: currentCount + 1 } as never)
+    .eq("id", optionId);
 
   return { success: true };
 }
 
-export function pollExists(id: string): boolean {
-  return polls.has(id);
+export async function pollExists(id: string): Promise<boolean> {
+  const supabase = getSupabase();
+  const { count } = await supabase
+    .from("polls")
+    .select("*", { count: "exact", head: true })
+    .eq("id", id);
+  return (count ?? 0) > 0;
 }
 
 // ─── For real-time polling: get current options for a poll ────
 
-export function getOptions(pollId: string): PollOption[] {
-  return Array.from(options.values())
-    .filter((o) => o.poll_id === pollId)
-    .sort((a, b) => a.id.localeCompare(b.id));
+export async function getOptions(pollId: string): Promise<PollOption[]> {
+  const supabase = getSupabase();
+  const { data } = await supabase
+    .from("options")
+    .select("*")
+    .eq("poll_id", pollId)
+    .order("id");
+
+  const options = (data ?? []) as unknown as OptionRow[];
+
+  return options.map((o) => ({
+    id: o.id,
+    poll_id: o.poll_id,
+    text: o.text,
+    vote_count: o.votes ?? 0,
+  }));
 }
 
 // ─── Get all votes for a poll (for responses view) ───────────
@@ -122,17 +214,31 @@ export interface VoteWithOption {
   created_at: string;
 }
 
-export function getVotesForPoll(pollId: string): VoteWithOption[] {
-  return votes
-    .filter((v) => v.poll_id === pollId)
-    .map((v) => {
-      const opt = options.get(v.option_id);
-      return {
-        id: v.id,
-        option_text: opt?.text ?? "Unknown",
-        voter_ip: v.voter_ip,
-        created_at: v.created_at,
-      };
-    })
-    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+export async function getVotesForPoll(pollId: string): Promise<VoteWithOption[]> {
+  const supabase = getSupabase();
+  const { data } = await supabase
+    .from("votes")
+    .select("id, voter_ip, created_at, option_id")
+    .eq("poll_id", pollId)
+    .order("created_at", { ascending: false });
+
+  const votes = (data ?? []) as unknown as VoteRow[];
+
+  // Get all option texts for this poll
+  const { data: optData } = await supabase
+    .from("options")
+    .select("id, text")
+    .eq("poll_id", pollId);
+
+  const optMap = new Map<string, string>();
+  for (const o of (optData ?? []) as unknown as { id: string; text: string }[]) {
+    optMap.set(o.id, o.text);
+  }
+
+  return votes.map((v) => ({
+    id: v.id,
+    option_text: optMap.get(v.option_id) ?? "Unknown",
+    voter_ip: v.voter_ip,
+    created_at: v.created_at,
+  }));
 }

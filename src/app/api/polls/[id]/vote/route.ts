@@ -66,7 +66,7 @@ export async function POST(
     const fingerprint = body.fingerprint || "unknown";
 
     // ── Verify poll exists ──────────────────────────────────
-    if (!pollExists(pollId)) {
+    if (!(await pollExists(pollId))) {
       return NextResponse.json<ApiError>(
         { error: "Poll not found." },
         { status: 404 }
@@ -74,7 +74,7 @@ export async function POST(
     }
 
     // ── Verify option belongs to this poll ──────────────────
-    if (!optionBelongsToPoll(body.option_id, pollId)) {
+    if (!(await optionBelongsToPoll(body.option_id, pollId))) {
       return NextResponse.json<ApiError>(
         { error: "Option not found in this poll." },
         { status: 400 }
@@ -82,7 +82,7 @@ export async function POST(
     }
 
     // ── Fairness Check 1: IP-based duplicate detection ──────
-    if (hasVotedByIp(pollId, voterIp)) {
+    if (await hasVotedByIp(pollId, voterIp)) {
       return NextResponse.json<ApiError>(
         { error: "You have already voted on this poll." },
         { status: 409 }
@@ -90,7 +90,7 @@ export async function POST(
     }
 
     // ── Fairness Check 2: Fingerprint-based duplicate detection
-    if (hasVotedByFingerprint(pollId, fingerprint)) {
+    if (await hasVotedByFingerprint(pollId, fingerprint)) {
       return NextResponse.json<ApiError>(
         { error: "You have already voted on this poll." },
         { status: 409 }
@@ -98,7 +98,7 @@ export async function POST(
     }
 
     // ── Cast the vote ───────────────────────────────────────
-    const result = castVote(pollId, body.option_id, voterIp, fingerprint);
+    const result = await castVote(pollId, body.option_id, voterIp, fingerprint);
 
     if (!result.success) {
       return NextResponse.json<ApiError>(

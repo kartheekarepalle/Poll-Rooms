@@ -20,7 +20,7 @@ export async function GET(
       );
     }
 
-    const poll = getPoll(id);
+    const poll = await getPoll(id);
 
     if (!poll) {
       return NextResponse.json<ApiError>(

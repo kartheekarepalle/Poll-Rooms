@@ -1,32 +1,20 @@
 import { createClient } from "@supabase/supabase-js";
 
-// ─── Server-side Supabase client (uses service role key) ─────
-// Used in API routes for privileged operations like inserting votes.
-export function createServerClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+// ─── Single Supabase client (uses anon key for all operations) ─
+// RLS policies are set to allow public read/insert on all tables.
 
-  if (!url || !key) {
-    throw new Error("Missing Supabase server environment variables");
-  }
+let supabaseClient: ReturnType<typeof createClient> | null = null;
 
-  return createClient(url, key);
-}
-
-// ─── Browser-side Supabase client (uses anon key) ────────────
-// Used for real-time subscriptions and safe read operations.
-let browserClient: ReturnType<typeof createClient> | null = null;
-
-export function createBrowserClient() {
-  if (browserClient) return browserClient;
+export function getSupabase() {
+  if (supabaseClient) return supabaseClient;
 
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
   if (!url || !key) {
-    throw new Error("Missing Supabase browser environment variables");
+    throw new Error("Missing Supabase environment variables");
   }
 
-  browserClient = createClient(url, key);
-  return browserClient;
+  supabaseClient = createClient(url, key);
+  return supabaseClient;
 }

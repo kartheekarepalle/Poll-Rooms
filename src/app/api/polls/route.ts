@@ -92,8 +92,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ── Create poll in in-memory store ──────────────────────
-    const poll = createPoll(body.question.trim(), cleanOptions);
+    // ── Create poll in Supabase ─────────────────────────────
+    const poll = await createPoll(body.question.trim(), cleanOptions);
 
     return NextResponse.json({ poll }, { status: 201 });
   } catch (error) {
