@@ -29,7 +29,7 @@ IF
       char_length(text) >= 1
       AND char_length(text) <= 200
     )
-    , vote_count INTEGER NOT NULL DEFAULT 0 CHECK (vote_count >= 0)
+    , votes INTEGER NOT NULL DEFAULT 0 CHECK (votes >= 0)
   );
 
   CREATE INDEX idx_options_poll_id
@@ -47,7 +47,7 @@ IF
     , option_id UUID NOT NULL REFERENCES options(id)
     ON DELETE CASCADE
     , voter_ip TEXT NOT NULL
-    , voter_fingerprint TEXT NOT NULL
+    , fingerprint TEXT NOT NULL
     , created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   );
 
@@ -57,7 +57,7 @@ IF
 
   -- Fairness: one vote per fingerprint per poll (secondary check)
   CREATE UNIQUE INDEX idx_votes_poll_fingerprint
-  ON votes(poll_id, voter_fingerprint);
+  ON votes(poll_id, fingerprint);
 
   CREATE INDEX idx_votes_poll_id
   ON votes(poll_id);
@@ -116,8 +116,6 @@ IF
   FOR INSERT
   WITH CHECK (true);
 
-  -- ─── Enable Realtime ─────────────────────────────────────────
-  -- Supabase Realtime will broadcast changes to the options table
-  -- so all connected clients see vote count updates live.
-
-  ALTER PUBLICATION supabase_realtime ADD TABLE options;
+  -- ─── Enable Realtime (optional) ─────────────────────────────────
+  -- Uncomment if using Supabase Realtime instead of HTTP polling.
+  -- ALTER PUBLICATION supabase_realtime ADD TABLE options;
